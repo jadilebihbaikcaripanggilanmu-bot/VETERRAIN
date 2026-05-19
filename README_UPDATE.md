@@ -1,4 +1,4 @@
-# Revisi VETERRAIN - Routing Lebih Pintar + Label Nama Bangunan
+# Revisi VETERRAIN - Routing Topologi Lebih Toleran
 
 Isi ZIP ini adalah file pengganti:
 
@@ -9,17 +9,16 @@ js/app.js
 ```
 
 Revisi:
-- Menampilkan nama bangunan langsung di peta 2D.
-- Menampilkan label nama bangunan di mode 3D.
-- Routing dibuat lebih toleran:
-  - node otomatis dibuat pada perpotongan polyline,
-  - endpoint jalur yang sangat dekat akan disnap otomatis,
-  - mengurangi kasus rute muter karena garis terlihat nyambung tapi belum tersambung secara topologi.
-- Tetap ada fitur Play Demo Jalan 3D dengan marker orang berjalan.
-- Shortcut `R` untuk reset view.
+- Routing dibuat lebih toleran untuk hasil digitasi manual:
+  - memecah garis pada titik perpotongan,
+  - menyambungkan endpoint jalur yang dekat dengan segmen lain,
+  - toleransi snap jaringan dinaikkan menjadi 6 meter.
+- Label nama bangunan tetap tampil langsung di 2D dan 3D.
+- Fitur Play Demo Jalan 3D dengan marker orang jalan tetap ada.
+- Shortcut `R` untuk reset view tetap ada.
 
-Catatan penting:
-Kalau masih ada rute yang menurutmu harusnya bisa lewat jalur tertentu tetapi sistem tetap memutar, kemungkinan jalur tersebut belum benar-benar tersedia/terhubung di GeoJSON. Tambahkan/split garis jalurnya di GIS, export ulang `jalur_pejalan_kaki.geojson`, lalu push ulang.
+Catatan:
+Kalau masih ada rute yang tidak melewati jalan tertentu, kemungkinan jalur tersebut memang belum tersambung di data GeoJSON. Di GIS, tambahkan connector pendek/split jalur di persimpangan, export ulang `jalur_pejalan_kaki.geojson`, lalu push ulang.
 
 Cara pakai:
 1. Extract ZIP.

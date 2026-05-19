@@ -2,7 +2,7 @@
 const CONFIG={center:[-7.76236,110.41000],zoom2D:18,zoom3D:18,minZoom:16,maxZoom:21,tileUrl:"TILES02/{z}/{x}/{y}.png",snapToleranceMeters:60,walkingSpeedMetersPerMinute:80,
   // Toleransi ini membantu kalau garis hasil digitasi terlihat tersambung
   // tetapi endpoint-nya beda sedikit. Naikkan ke 2-3 kalau masih ada rute yang muter.
-  networkSnapToleranceMeters:1.5,data:{buildings:"data/bangunan.geojson",boundary:"data/batas.geojson",field:"data/lapangan.geojson",network:"data/jalur_pejalan_kaki.geojson"}};
+  networkSnapToleranceMeters:6,data:{buildings:"data/bangunan.geojson",boundary:"data/batas.geojson",field:"data/lapangan.geojson",network:"data/jalur_pejalan_kaki.geojson"}};
 const state={mode:"2d",pickMode:null,startPoint:null,endPoint:null,geojson:{buildings:null,boundary:null,field:null,network:null},graph:null,route:null};
 const layers2D={
   buildings:null,
@@ -65,10 +65,11 @@ function update3DPins(){stopDemoAnimation();remove3DMarker("start");remove3DMark
 function create3DMarker(label,type,latlng){const el=document.createElement("div");el.className=`pin-marker ${type}`;el.textContent=label;return new maplibregl.Marker({element:el,anchor:"center"}).setLngLat([latlng.lng,latlng.lat]).addTo(map3d)}
 function remove3DMarker(type){if(markers3D[type]){markers3D[type].remove();markers3D[type]=null}}
 function buildGraphFromGeoJSON(geojson){
-  // Versi revisi:
-  // 1. Membaca semua segmen polyline.
-  // 2. Membuat node otomatis pada perpotongan garis.
-  // 3. Men-snap node yang sangat dekat agar routing tidak muter karena gap kecil.
+  // Versi revisi topologi:
+  // - Memecah garis pada perpotongan.
+  // - Menyambungkan endpoint yang dekat dengan segmen lain.
+  // - Men-snap node yang jaraknya dekat.
+  // Ini membantu kasus jalur terlihat nyambung di peta, tetapi secara data masih ada gap kecil.
   const rawSegments=[];
 
   forEachLineSegment(geojson,(a,b,props)=>{
@@ -77,10 +78,15 @@ function buildGraphFromGeoJSON(geojson){
     }
   });
 
-  const splitSegments=splitSegmentsAtIntersections(rawSegments);
+  const splitByIntersections=splitSegmentsAtIntersections(rawSegments);
+  const splitByNearEndpoints=splitSegmentsAtNearEndpoints(
+    splitByIntersections,
+    CONFIG.networkSnapToleranceMeters||6
+  );
+
   const graph=new Map();
   const allSegments=[];
-  const snapTol=CONFIG.networkSnapToleranceMeters||1.5;
+  const snapTol=CONFIG.networkSnapToleranceMeters||6;
   const canonical=[];
 
   function canonicalKey(coord){
@@ -94,7 +100,7 @@ function buildGraphFromGeoJSON(geojson){
     return key;
   }
 
-  splitSegments.forEach((seg)=>{
+  splitByNearEndpoints.forEach((seg)=>{
     const keyA=canonicalKey(seg.a);
     const keyB=canonicalKey(seg.b);
     if(keyA===keyB)return;
@@ -131,12 +137,53 @@ function splitSegmentsAtIntersections(segments){
       const hit=segmentIntersection2D(segments[i].a,segments[i].b,segments[j].a,segments[j].b);
       if(!hit)continue;
 
-      // Hindari menambahkan intersection yang terlalu dekat dengan endpoint secara berulang.
       addSplitPoint(splitPoints[i],hit.coord,hit.t1);
       addSplitPoint(splitPoints[j],hit.coord,hit.t2);
     }
   }
 
+  return rebuildSegmentsFromSplitPoints(segments,splitPoints);
+}
+
+// Revisi penting:
+// Kalau endpoint suatu jalur berhenti sangat dekat dengan segmen jalur lain,
+// segmen lain akan dipecah pada titik proyeksi tersebut. Ini sering terjadi
+// pada hasil digitasi manual di simpang/T-junction.
+function splitSegmentsAtNearEndpoints(segments,toleranceMeters){
+  const splitPoints=segments.map((seg)=>[
+    {coord:seg.a,t:0},
+    {coord:seg.b,t:1}
+  ]);
+
+  for(let i=0;i<segments.length;i++){
+    const endpoints=[segments[i].a,segments[i].b];
+
+    endpoints.forEach((endpoint)=>{
+      for(let j=0;j<segments.length;j++){
+        if(i===j)return;
+
+        const target=segments[j];
+        const projected=closestPointOnSegment(endpoint,target.a,target.b);
+        const dist=distanceMeters(endpoint,projected);
+
+        if(dist>toleranceMeters)return;
+
+        const t=segmentParameter(projected,target.a,target.b);
+        if(t>0.000001&&t<0.999999){
+          addSplitPoint(splitPoints[j],projected,t);
+
+          // Tambahkan juga titik endpoint sebagai kandidat node,
+          // supaya nanti canonical snapping menyatukan endpoint dengan projected point.
+          addSplitPoint(splitPoints[i],endpoint,endpointAlmostEquals(endpoint,segments[i].a)?0:1);
+        }
+      }
+    });
+  }
+
+  return rebuildSegmentsFromSplitPoints(segments,splitPoints);
+}
+
+function rebuildSegmentsFromSplitPoints(segments,splitPoints){
   const result=[];
 
   segments.forEach((seg,idx)=>{
@@ -159,13 +206,30 @@ function splitSegmentsAtIntersections(segments){
 }
 
 function addSplitPoint(list,coord,t){
-  if(t<0.000001||t>0.999999){
-    // endpoint sudah ada
-    return;
-  }
-
   if(list.some((p)=>distanceMeters(p.coord,coord)<0.05))return;
   list.push({coord,t});
+}
+
+function endpointAlmostEquals(a,b){
+  return distanceMeters(a,b)<0.05;
+}
+
+// Nilai 0-1 posisi projected point pada segmen a-b.
+function segmentParameter(point,a,b){
+  const refLat=(point[1]+a[1]+b[1])/3;
+  const P=projectToMeters(point,refLat);
+  const A=projectToMeters(a,refLat);
+  const B=projectToMeters(b,refLat);
+
+  const ABx=B.x-A.x;
+  const ABy=B.y-A.y;
+  const APx=P.x-A.x;
+  const APy=P.y-A.y;
+  const ab2=ABx*ABx+ABy*ABy;
+
+  if(ab2===0)return 0;
+
+  return Math.max(0,Math.min(1,(APx*ABx+APy*ABy)/ab2));
 }
 
 // Intersection planar untuk area kecil kampus.
